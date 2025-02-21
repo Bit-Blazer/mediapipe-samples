@@ -7,21 +7,32 @@
     android:layout_height="match_parent"
     android:background="@android:color/transparent">
 
-    <RelativeLayout
+<!--    <RelativeLayout-->
+<!--        android:layout_width="match_parent"-->
+<!--        android:layout_height="match_parent"-->
+<!--        android:orientation="vertical">-->
+
+<!--        <androidx.fragment.app.FragmentContainerView-->
+<!--            android:id="@+id/fragment_container"-->
+<!--            android:name="androidx.navigation.fragment.NavHostFragment"-->
+<!--            android:layout_width="match_parent"-->
+<!--            android:layout_height="match_parent"-->
+<!--            android:background="@android:color/transparent"-->
+<!--            android:keepScreenOn="true"-->
+<!--            app:defaultNavHost="true"-->
+<!--            tools:context=".MainActivity" />-->
+
+<!--    </RelativeLayout>-->
+
+        <androidx.camera.view.PreviewView
+        android:id="@+id/view_finder"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical">
+        app:scaleType="fillStart" />
 
-        <androidx.fragment.app.FragmentContainerView
-            android:id="@+id/fragment_container"
-            android:name="androidx.navigation.fragment.NavHostFragment"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="@android:color/transparent"
-            android:keepScreenOn="true"
-            app:defaultNavHost="true"
-            app:navGraph="@navigation/nav_graph"
-            tools:context=".MainActivity" />
+    <com.google.mediapipe.examples.handlandmarker.OverlayView
+        android:id="@+id/overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
-    </RelativeLayout>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>
