@@ -1,0 +1,1405 @@
+
+================================================================
+Directory Structure
+================================================================
+AndroidManifest.xml
+java/com/google/mediapipe/examples/handlandmarker/fragment/CameraFragment.kt
+java/com/google/mediapipe/examples/handlandmarker/fragment/PermissionsFragment.kt
+java/com/google/mediapipe/examples/handlandmarker/HandLandmarkerHelper.kt
+java/com/google/mediapipe/examples/handlandmarker/MainActivity.kt
+java/com/google/mediapipe/examples/handlandmarker/MainViewModel.kt
+java/com/google/mediapipe/examples/handlandmarker/OverlayView.kt
+res/color/bg_nav_item.xml
+res/drawable/ic_baseline_add_24.xml
+res/drawable/ic_baseline_photo_camera_24.xml
+res/drawable/ic_baseline_photo_library_24.xml
+res/drawable/ic_minus.xml
+res/drawable/ic_plus.xml
+res/drawable/media_pipe_banner.xml
+res/layout/activity_main.xml
+res/layout/fragment_camera.xml
+res/layout/fragment_gallery.xml
+res/layout/info_bottom_sheet.xml
+res/menu/menu_bottom_nav.xml
+res/navigation/nav_graph.xml
+res/values/colors.xml
+res/values/dimens.xml
+res/values/strings.xml
+res/values/styles.xml
+
+================================================================
+Files
+================================================================
+
+================
+File: AndroidManifest.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:dist="http://schemas.android.com/apk/distribution"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Enable instant app support -->
+    <dist:module dist:instant="true" />
+
+    <!-- Declare features -->
+    <uses-feature android:name="android.hardware.camera" />
+
+    <!-- Declare permissions -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <application android:allowBackup="true" android:icon="@mipmap/ic_launcher" android:label="@string/app_name" android:roundIcon="@mipmap/ic_launcher_round" android:supportsRtl="true" android:taskAffinity="" android:theme="@style/AppTheme" tools:ignore="AllowBackup">
+
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Declare notch support -->
+            <meta-data android:name="android.notch_support" android:value="true" />
+        </activity>
+    </application>
+
+</manifest>
+
+================
+File: java/com/google/mediapipe/examples/handlandmarker/fragment/CameraFragment.kt
+================
+package com.google.mediapipe.examples.handlandmarker.fragment
+
+import android.annotation.SuppressLint
+import android.content.res.Configuration
+import android.os.Bundle
+import android.util.Log
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.Toast
+import androidx.camera.core.AspectRatio
+import androidx.camera.core.Camera
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.activityViewModels
+import androidx.navigation.Navigation
+import com.google.mediapipe.examples.handlandmarker.HandLandmarkerHelper
+import com.google.mediapipe.examples.handlandmarker.MainViewModel
+import com.google.mediapipe.examples.handlandmarker.R
+import com.google.mediapipe.examples.handlandmarker.databinding.FragmentCameraBinding
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
+
+    companion object {
+        private const val TAG = "Hand Landmarker"
+    }
+
+    private var _fragmentCameraBinding: FragmentCameraBinding? = null
+
+    private val fragmentCameraBinding
+        get() = _fragmentCameraBinding!!
+
+    private lateinit var handLandmarkerHelper: HandLandmarkerHelper
+    private val viewModel: MainViewModel by activityViewModels()
+    private var preview: Preview? = null
+    private var imageAnalyzer: ImageAnalysis? = null
+    private var camera: Camera? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var cameraFacing = CameraSelector.LENS_FACING_FRONT
+
+    /** Blocking ML operations are performed using this executor */
+    private lateinit var backgroundExecutor: ExecutorService
+
+    override fun onResume() {
+        super.onResume()
+        // Make sure that all permissions are still present, since the
+        // user could have removed them while the app was in paused state.
+        if (!PermissionsFragment.hasPermissions(requireContext())) {
+            Navigation.findNavController(requireActivity(), R.id.fragment_container)
+                    .navigate(R.id.action_camera_to_permissions)
+        }
+
+        // Start the HandLandmarkerHelper again when users come back
+        // to the foreground.
+        backgroundExecutor.execute {
+            if (handLandmarkerHelper.isClose()) {
+                handLandmarkerHelper.setupHandLandmarker()
+            }
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (this::handLandmarkerHelper.isInitialized) {
+            viewModel.setMaxHands(handLandmarkerHelper.maxNumHands)
+            viewModel.setMinHandDetectionConfidence(handLandmarkerHelper.minHandDetectionConfidence)
+            viewModel.setMinHandTrackingConfidence(handLandmarkerHelper.minHandTrackingConfidence)
+            viewModel.setMinHandPresenceConfidence(handLandmarkerHelper.minHandPresenceConfidence)
+            viewModel.setDelegate(handLandmarkerHelper.currentDelegate)
+
+            // Close the HandLandmarkerHelper and release resources
+            backgroundExecutor.execute { handLandmarkerHelper.clearHandLandmarker() }
+        }
+    }
+
+    override fun onDestroyView() {
+        _fragmentCameraBinding = null
+        super.onDestroyView()
+
+        // Shut down our background executor
+        backgroundExecutor.shutdown()
+        backgroundExecutor.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS)
+    }
+
+    override fun onCreateView(
+            inflater: LayoutInflater,
+            container: ViewGroup?,
+            savedInstanceState: Bundle?
+    ): View {
+        _fragmentCameraBinding = FragmentCameraBinding.inflate(inflater, container, false)
+
+        return fragmentCameraBinding.root
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        // Initialize our background executor
+        backgroundExecutor = Executors.newSingleThreadExecutor()
+
+        // Wait for the views to be properly laid out
+        fragmentCameraBinding.viewFinder.post {
+            // Set up the camera and its use cases
+            setUpCamera()
+        }
+
+        // Create the HandLandmarkerHelper that will handle the inference
+        backgroundExecutor.execute {
+            handLandmarkerHelper =
+                    HandLandmarkerHelper(
+                            context = requireContext(),
+                            runningMode = RunningMode.LIVE_STREAM,
+                            minHandDetectionConfidence =
+                                    viewModel.currentMinHandDetectionConfidence,
+                            minHandTrackingConfidence = viewModel.currentMinHandTrackingConfidence,
+                            minHandPresenceConfidence = viewModel.currentMinHandPresenceConfidence,
+                            maxNumHands = viewModel.currentMaxHands,
+                            currentDelegate = viewModel.currentDelegate,
+                            handLandmarkerHelperListener = this
+                    )
+        }
+
+        // Attach listeners to UI control widgets
+        initBottomSheetControls()
+    }
+
+    private fun initBottomSheetControls() {
+        // init bottom sheet settings
+        fragmentCameraBinding.bottomSheetLayout.maxHandsValue.text =
+                viewModel.currentMaxHands.toString()
+        fragmentCameraBinding.bottomSheetLayout.detectionThresholdValue.text =
+                String.format(Locale.US, "%.2f", viewModel.currentMinHandDetectionConfidence)
+        fragmentCameraBinding.bottomSheetLayout.trackingThresholdValue.text =
+                String.format(Locale.US, "%.2f", viewModel.currentMinHandTrackingConfidence)
+        fragmentCameraBinding.bottomSheetLayout.presenceThresholdValue.text =
+                String.format(Locale.US, "%.2f", viewModel.currentMinHandPresenceConfidence)
+
+        // When clicked, lower hand detection score threshold floor
+        fragmentCameraBinding.bottomSheetLayout.detectionThresholdMinus.setOnClickListener {
+            if (handLandmarkerHelper.minHandDetectionConfidence >= 0.2) {
+                handLandmarkerHelper.minHandDetectionConfidence -= 0.1f
+                updateControlsUi()
+            }
+        }
+
+        // When clicked, raise hand detection score threshold floor
+        fragmentCameraBinding.bottomSheetLayout.detectionThresholdPlus.setOnClickListener {
+            if (handLandmarkerHelper.minHandDetectionConfidence <= 0.8) {
+                handLandmarkerHelper.minHandDetectionConfidence += 0.1f
+                updateControlsUi()
+            }
+        }
+
+        // When clicked, lower hand tracking score threshold floor
+        fragmentCameraBinding.bottomSheetLayout.trackingThresholdMinus.setOnClickListener {
+            if (handLandmarkerHelper.minHandTrackingConfidence >= 0.2) {
+                handLandmarkerHelper.minHandTrackingConfidence -= 0.1f
+                updateControlsUi()
+            }
+        }
+
+        // When clicked, raise hand tracking score threshold floor
+        fragmentCameraBinding.bottomSheetLayout.trackingThresholdPlus.setOnClickListener {
+            if (handLandmarkerHelper.minHandTrackingConfidence <= 0.8) {
+                handLandmarkerHelper.minHandTrackingConfidence += 0.1f
+                updateControlsUi()
+            }
+        }
+
+        // When clicked, lower hand presence score threshold floor
+        fragmentCameraBinding.bottomSheetLayout.presenceThresholdMinus.setOnClickListener {
+            if (handLandmarkerHelper.minHandPresenceConfidence >= 0.2) {
+                handLandmarkerHelper.minHandPresenceConfidence -= 0.1f
+                updateControlsUi()
+            }
+        }
+
+        // When clicked, raise hand presence score threshold floor
+        fragmentCameraBinding.bottomSheetLayout.presenceThresholdPlus.setOnClickListener {
+            if (handLandmarkerHelper.minHandPresenceConfidence <= 0.8) {
+                handLandmarkerHelper.minHandPresenceConfidence += 0.1f
+                updateControlsUi()
+            }
+        }
+
+        // When clicked, reduce the number of hands that can be detected at a
+        // time
+        fragmentCameraBinding.bottomSheetLayout.maxHandsMinus.setOnClickListener {
+            if (handLandmarkerHelper.maxNumHands > 1) {
+                handLandmarkerHelper.maxNumHands--
+                updateControlsUi()
+            }
+        }
+
+        // When clicked, increase the number of hands that can be detected
+        // at a time
+        fragmentCameraBinding.bottomSheetLayout.maxHandsPlus.setOnClickListener {
+            if (handLandmarkerHelper.maxNumHands < 2) {
+                handLandmarkerHelper.maxNumHands++
+                updateControlsUi()
+            }
+        }
+
+        // When clicked, change the underlying hardware used for inference.
+        // Current options are CPU and GPU
+        fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.setSelection(
+                viewModel.currentDelegate,
+                false
+        )
+        fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.onItemSelectedListener =
+                object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(p0: AdapterView<*>?, p1: View?, p2: Int, p3: Long) {
+                        try {
+                            handLandmarkerHelper.currentDelegate = p2
+                            updateControlsUi()
+                        } catch (e: UninitializedPropertyAccessException) {
+                            Log.e(TAG, "HandLandmarkerHelper has not been initialized yet.")
+                        }
+                    }
+
+                    override fun onNothingSelected(p0: AdapterView<*>?) {
+                        /* no op */
+                    }
+                }
+    }
+
+    // Update the values displayed in the bottom sheet. Reset Handlandmarker
+    // helper.
+    private fun updateControlsUi() {
+        fragmentCameraBinding.bottomSheetLayout.maxHandsValue.text =
+                handLandmarkerHelper.maxNumHands.toString()
+        fragmentCameraBinding.bottomSheetLayout.detectionThresholdValue.text =
+                String.format(Locale.US, "%.2f", handLandmarkerHelper.minHandDetectionConfidence)
+        fragmentCameraBinding.bottomSheetLayout.trackingThresholdValue.text =
+                String.format(Locale.US, "%.2f", handLandmarkerHelper.minHandTrackingConfidence)
+        fragmentCameraBinding.bottomSheetLayout.presenceThresholdValue.text =
+                String.format(Locale.US, "%.2f", handLandmarkerHelper.minHandPresenceConfidence)
+
+        // Needs to be cleared instead of reinitialized because the GPU
+        // delegate needs to be initialized on the thread using it when applicable
+        backgroundExecutor.execute {
+            handLandmarkerHelper.clearHandLandmarker()
+            handLandmarkerHelper.setupHandLandmarker()
+        }
+        fragmentCameraBinding.overlay.clear()
+    }
+
+    // Initialize CameraX, and prepare to bind the camera use cases
+    private fun setUpCamera() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext())
+        cameraProviderFuture.addListener(
+                {
+                    // CameraProvider
+                    cameraProvider = cameraProviderFuture.get()
+
+                    // Build and bind the camera use cases
+                    bindCameraUseCases()
+                },
+                ContextCompat.getMainExecutor(requireContext())
+        )
+    }
+
+    // Declare and bind preview, capture and analysis use cases
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun bindCameraUseCases() {
+
+        // CameraProvider
+        val cameraProvider =
+                cameraProvider ?: throw IllegalStateException("Camera initialization failed.")
+
+        val cameraSelector = CameraSelector.Builder().requireLensFacing(cameraFacing).build()
+
+        // Preview. Only using the 4:3 ratio because this is the closest to our models
+        preview =
+                Preview.Builder()
+                        .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                        .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
+                        .build()
+
+        // ImageAnalysis. Using RGBA 8888 to match how our models work
+        imageAnalyzer =
+                ImageAnalysis.Builder()
+                        .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                        .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                        .build()
+                        // The analyzer can then be assigned to the instance
+                        .also { it.setAnalyzer(backgroundExecutor) { image -> detectHand(image) } }
+
+        // Must unbind the use-cases before rebinding them
+        cameraProvider.unbindAll()
+
+        try {
+            // A variable number of use-cases can be passed here -
+            // camera provides access to CameraControl & CameraInfo
+            camera = cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalyzer)
+
+            // Attach the viewfinder's surface provider to preview use case
+            preview?.setSurfaceProvider(fragmentCameraBinding.viewFinder.surfaceProvider)
+        } catch (exc: Exception) {
+            Log.e(TAG, "Use case binding failed", exc)
+        }
+    }
+
+    private fun detectHand(imageProxy: ImageProxy) {
+        handLandmarkerHelper.detectLiveStream(
+                imageProxy = imageProxy,
+                isFrontCamera = cameraFacing == CameraSelector.LENS_FACING_FRONT
+        )
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        imageAnalyzer?.targetRotation = fragmentCameraBinding.viewFinder.display.rotation
+    }
+
+    // Update UI after hand have been detected. Extracts original
+    // image height/width to scale and place the landmarks properly through
+    // OverlayView
+    override fun onResults(resultBundle: HandLandmarkerHelper.ResultBundle) {
+        activity?.runOnUiThread {
+            if (_fragmentCameraBinding != null) {
+                fragmentCameraBinding.bottomSheetLayout.inferenceTimeVal.text =
+                        String.format("%d ms", resultBundle.inferenceTime)
+
+                // Pass necessary information to OverlayView for drawing on the canvas
+                fragmentCameraBinding.overlay.setResults(
+                        resultBundle.results.first(),
+                        resultBundle.inputImageHeight,
+                        resultBundle.inputImageWidth,
+                        RunningMode.LIVE_STREAM
+                )
+
+                // Force a redraw
+                fragmentCameraBinding.overlay.invalidate()
+            }
+        }
+    }
+
+    override fun onError(error: String, errorCode: Int) {
+        activity?.runOnUiThread {
+            Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
+            if (errorCode == HandLandmarkerHelper.GPU_ERROR) {
+                fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.setSelection(
+                        HandLandmarkerHelper.DELEGATE_CPU,
+                        false
+                )
+            }
+        }
+    }
+}
+
+================
+File: java/com/google/mediapipe/examples/handlandmarker/fragment/PermissionsFragment.kt
+================
+package com.google.mediapipe.examples.handlandmarker.fragment
+
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.Navigation
+import com.google.mediapipe.examples.handlandmarker.R
+
+private val PERMISSIONS_REQUIRED = arrayOf(Manifest.permission.CAMERA)
+
+class PermissionsFragment : Fragment() {
+
+    private val requestPermissionLauncher =
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+                    isGranted: Boolean ->
+                if (isGranted) {
+                    Toast.makeText(context, "Permission request granted", Toast.LENGTH_LONG).show()
+                    navigateToCamera()
+                } else {
+                    Toast.makeText(context, "Permission request denied", Toast.LENGTH_LONG).show()
+                }
+            }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        when (PackageManager.PERMISSION_GRANTED) {
+            ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA) -> {
+                navigateToCamera()
+            }
+            else -> {
+                requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+        }
+    }
+
+    private fun navigateToCamera() {
+        lifecycleScope.launchWhenStarted {
+            Navigation.findNavController(requireActivity(), R.id.fragment_container)
+                    .navigate(R.id.action_permissions_to_camera)
+        }
+    }
+
+    companion object {
+
+        /** Convenience method used to check if all permissions required by this app are granted */
+        fun hasPermissions(context: Context) =
+                PERMISSIONS_REQUIRED.all {
+                    ContextCompat.checkSelfPermission(context, it) ==
+                            PackageManager.PERMISSION_GRANTED
+                }
+    }
+}
+
+================
+File: java/com/google/mediapipe/examples/handlandmarker/HandLandmarkerHelper.kt
+================
+package com.google.mediapipe.examples.handlandmarker
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Matrix
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.SystemClock
+import android.util.Log
+import androidx.annotation.VisibleForTesting
+import androidx.camera.core.ImageProxy
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.framework.image.MPImage
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
+
+class HandLandmarkerHelper(
+        var minHandDetectionConfidence: Float = DEFAULT_HAND_DETECTION_CONFIDENCE,
+        var minHandTrackingConfidence: Float = DEFAULT_HAND_TRACKING_CONFIDENCE,
+        var minHandPresenceConfidence: Float = DEFAULT_HAND_PRESENCE_CONFIDENCE,
+        var maxNumHands: Int = DEFAULT_NUM_HANDS,
+        var currentDelegate: Int = DELEGATE_CPU,
+        var runningMode: RunningMode = RunningMode.IMAGE,
+        val context: Context,
+        // this listener is only used when running in RunningMode.LIVE_STREAM
+        val handLandmarkerHelperListener: LandmarkerListener? = null
+) {
+
+    // For this example this needs to be a var so it can be reset on changes.
+    // If the Hand Landmarker will not change, a lazy val would be preferable.
+    private var handLandmarker: HandLandmarker? = null
+
+    init {
+        setupHandLandmarker()
+    }
+
+    fun clearHandLandmarker() {
+        handLandmarker?.close()
+        handLandmarker = null
+    }
+
+    // Return running status of HandLandmarkerHelper
+    fun isClose(): Boolean {
+        return handLandmarker == null
+    }
+
+    // Initialize the Hand landmarker using current settings on the
+    // thread that is using it. CPU can be used with Landmarker
+    // that are created on the main thread and used on a background thread, but
+    // the GPU delegate needs to be used on the thread that initialized the
+    // Landmarker
+    fun setupHandLandmarker() {
+        // Set general hand landmarker options
+        val baseOptionBuilder = BaseOptions.builder()
+
+        // Use the specified hardware for running the model. Default to CPU
+        when (currentDelegate) {
+            DELEGATE_CPU -> {
+                baseOptionBuilder.setDelegate(Delegate.CPU)
+            }
+            DELEGATE_GPU -> {
+                baseOptionBuilder.setDelegate(Delegate.GPU)
+            }
+        }
+
+        baseOptionBuilder.setModelAssetPath(MP_HAND_LANDMARKER_TASK)
+
+        // Check if runningMode is consistent with handLandmarkerHelperListener
+        when (runningMode) {
+            RunningMode.LIVE_STREAM -> {
+                if (handLandmarkerHelperListener == null) {
+                    throw IllegalStateException(
+                            "handLandmarkerHelperListener must be set when runningMode is LIVE_STREAM."
+                    )
+                }
+            }
+            else -> {
+                // no-op
+            }
+        }
+
+        try {
+            val baseOptions = baseOptionBuilder.build()
+            // Create an option builder with base options and specific
+            // options only use for Hand Landmarker.
+            val optionsBuilder =
+                    HandLandmarker.HandLandmarkerOptions.builder()
+                            .setBaseOptions(baseOptions)
+                            .setMinHandDetectionConfidence(minHandDetectionConfidence)
+                            .setMinTrackingConfidence(minHandTrackingConfidence)
+                            .setMinHandPresenceConfidence(minHandPresenceConfidence)
+                            .setNumHands(maxNumHands)
+                            .setRunningMode(runningMode)
+
+            // The ResultListener and ErrorListener only use for LIVE_STREAM mode.
+            if (runningMode == RunningMode.LIVE_STREAM) {
+                optionsBuilder
+                        .setResultListener(this::returnLivestreamResult)
+                        .setErrorListener(this::returnLivestreamError)
+            }
+
+            val options = optionsBuilder.build()
+            handLandmarker = HandLandmarker.createFromOptions(context, options)
+        } catch (e: IllegalStateException) {
+            handLandmarkerHelperListener?.onError(
+                    "Hand Landmarker failed to initialize. See error logs for " + "details"
+            )
+            Log.e(TAG, "MediaPipe failed to load the task with error: " + e.message)
+        } catch (e: RuntimeException) {
+            // This occurs if the model being used does not support GPU
+            handLandmarkerHelperListener?.onError(
+                    "Hand Landmarker failed to initialize. See error logs for " + "details",
+                    GPU_ERROR
+            )
+            Log.e(TAG, "Image classifier failed to load model with error: " + e.message)
+        }
+    }
+
+    // Convert the ImageProxy to MP Image and feed it to HandlandmakerHelper.
+    fun detectLiveStream(imageProxy: ImageProxy, isFrontCamera: Boolean) {
+        if (runningMode != RunningMode.LIVE_STREAM) {
+            throw IllegalArgumentException(
+                    "Attempting to call detectLiveStream" +
+                            " while not using RunningMode.LIVE_STREAM"
+            )
+        }
+        val frameTime = SystemClock.uptimeMillis()
+
+        // Copy out RGB bits from the frame to a bitmap buffer
+        val bitmapBuffer =
+                Bitmap.createBitmap(imageProxy.width, imageProxy.height, Bitmap.Config.ARGB_8888)
+        imageProxy.use { bitmapBuffer.copyPixelsFromBuffer(imageProxy.planes[0].buffer) }
+        imageProxy.close()
+
+        val matrix =
+                Matrix().apply {
+                    // Rotate the frame received from the camera to be in the same direction as
+                    // it'll be shown
+                    postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
+
+                    // flip image if user use front camera
+                    if (isFrontCamera) {
+                        postScale(-1f, 1f, imageProxy.width.toFloat(), imageProxy.height.toFloat())
+                    }
+                }
+        val rotatedBitmap =
+                Bitmap.createBitmap(
+                        bitmapBuffer,
+                        0,
+                        0,
+                        bitmapBuffer.width,
+                        bitmapBuffer.height,
+                        matrix,
+                        true
+                )
+
+        // Convert the input Bitmap object to an MPImage object to run inference
+        val mpImage = BitmapImageBuilder(rotatedBitmap).build()
+
+        detectAsync(mpImage, frameTime)
+    }
+
+    // Run hand hand landmark using MediaPipe Hand Landmarker API
+    @VisibleForTesting
+    fun detectAsync(mpImage: MPImage, frameTime: Long) {
+        handLandmarker?.detectAsync(mpImage, frameTime)
+        // As we're using running mode LIVE_STREAM, the landmark result will
+        // be returned in returnLivestreamResult function
+    }
+
+    // Accepts the URI for a video file loaded from the user's gallery and attempts to run
+    // hand landmarker inference on the video. This process will evaluate every
+    // frame in the video and attach the results to a bundle that will be
+    // returned.
+    fun detectVideoFile(videoUri: Uri, inferenceIntervalMs: Long): ResultBundle? {
+        if (runningMode != RunningMode.VIDEO) {
+            throw IllegalArgumentException(
+                    "Attempting to call detectVideoFile" + " while not using RunningMode.VIDEO"
+            )
+        }
+
+        // Inference time is the difference between the system time at the start and finish of the
+        // process
+        val startTime = SystemClock.uptimeMillis()
+
+        var didErrorOccurred = false
+
+        // Load frames from the video and run the hand landmarker.
+        val retriever = MediaMetadataRetriever()
+        retriever.setDataSource(context, videoUri)
+        val videoLengthMs =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong()
+
+        // Note: We need to read width/height from frame instead of getting the width/height
+        // of the video directly because MediaRetriever returns frames that are smaller than the
+        // actual dimension of the video file.
+        val firstFrame = retriever.getFrameAtTime(0)
+        val width = firstFrame?.width
+        val height = firstFrame?.height
+
+        // If the video is invalid, returns a null detection result
+        if ((videoLengthMs == null) || (width == null) || (height == null)) return null
+
+        // Next, we'll get one frame every frameInterval ms, then run detection on these frames.
+        val resultList = mutableListOf<HandLandmarkerResult>()
+        val numberOfFrameToRead = videoLengthMs.div(inferenceIntervalMs)
+
+        for (i in 0..numberOfFrameToRead) {
+            val timestampMs = i * inferenceIntervalMs // ms
+
+            retriever.getFrameAtTime(
+                            timestampMs * 1000, // convert from ms to micro-s
+                            MediaMetadataRetriever.OPTION_CLOSEST
+                    )
+                    ?.let { frame ->
+                        // Convert the video frame to ARGB_8888 which is required by the MediaPipe
+                        val argb8888Frame =
+                                if (frame.config == Bitmap.Config.ARGB_8888) frame
+                                else frame.copy(Bitmap.Config.ARGB_8888, false)
+
+                        // Convert the input Bitmap object to an MPImage object to run inference
+                        val mpImage = BitmapImageBuilder(argb8888Frame).build()
+
+                        // Run hand landmarker using MediaPipe Hand Landmarker API
+                        handLandmarker?.detectForVideo(mpImage, timestampMs)?.let { detectionResult
+                            ->
+                            resultList.add(detectionResult)
+                        }
+                                ?: run {
+                                    didErrorOccurred = true
+                                    handLandmarkerHelperListener?.onError(
+                                            "ResultBundle could not be returned" +
+                                                    " in detectVideoFile"
+                                    )
+                                }
+                    }
+                    ?: run {
+                        didErrorOccurred = true
+                        handLandmarkerHelperListener?.onError(
+                                "Frame at specified time could not be" +
+                                        " retrieved when detecting in video."
+                        )
+                    }
+        }
+
+        retriever.release()
+
+        val inferenceTimePerFrameMs =
+                (SystemClock.uptimeMillis() - startTime).div(numberOfFrameToRead)
+
+        return if (didErrorOccurred) {
+            null
+        } else {
+            ResultBundle(resultList, inferenceTimePerFrameMs, height, width)
+        }
+    }
+
+    // Accepted a Bitmap and runs hand landmarker inference on it to return
+    // results back to the caller
+    fun detectImage(image: Bitmap): ResultBundle? {
+        if (runningMode != RunningMode.IMAGE) {
+            throw IllegalArgumentException(
+                    "Attempting to call detectImage" + " while not using RunningMode.IMAGE"
+            )
+        }
+
+        // Inference time is the difference between the system time at the
+        // start and finish of the process
+        val startTime = SystemClock.uptimeMillis()
+
+        // Convert the input Bitmap object to an MPImage object to run inference
+        val mpImage = BitmapImageBuilder(image).build()
+
+        // Run hand landmarker using MediaPipe Hand Landmarker API
+        handLandmarker?.detect(mpImage)?.also { landmarkResult ->
+            val inferenceTimeMs = SystemClock.uptimeMillis() - startTime
+            return ResultBundle(listOf(landmarkResult), inferenceTimeMs, image.height, image.width)
+        }
+
+        // If handLandmarker?.detect() returns null, this is likely an error. Returning null
+        // to indicate this.
+        handLandmarkerHelperListener?.onError("Hand Landmarker failed to detect.")
+        return null
+    }
+
+    // Return the landmark result to this HandLandmarkerHelper's caller
+    private fun returnLivestreamResult(result: HandLandmarkerResult, input: MPImage) {
+        val finishTimeMs = SystemClock.uptimeMillis()
+        val inferenceTime = finishTimeMs - result.timestampMs()
+
+        handLandmarkerHelperListener?.onResults(
+                ResultBundle(listOf(result), inferenceTime, input.height, input.width)
+        )
+    }
+
+    // Return errors thrown during detection to this HandLandmarkerHelper's
+    // caller
+    private fun returnLivestreamError(error: RuntimeException) {
+        handLandmarkerHelperListener?.onError(error.message ?: "An unknown error has occurred")
+    }
+
+    companion object {
+        const val TAG = "HandLandmarkerHelper"
+        private const val MP_HAND_LANDMARKER_TASK = "hand_landmarker.task"
+
+        const val DELEGATE_CPU = 0
+        const val DELEGATE_GPU = 1
+        const val DEFAULT_HAND_DETECTION_CONFIDENCE = 0.5F
+        const val DEFAULT_HAND_TRACKING_CONFIDENCE = 0.5F
+        const val DEFAULT_HAND_PRESENCE_CONFIDENCE = 0.5F
+        const val DEFAULT_NUM_HANDS = 1
+        const val OTHER_ERROR = 0
+        const val GPU_ERROR = 1
+    }
+
+    data class ResultBundle(
+            val results: List<HandLandmarkerResult>,
+            val inferenceTime: Long,
+            val inputImageHeight: Int,
+            val inputImageWidth: Int,
+    )
+
+    interface LandmarkerListener {
+        fun onError(error: String, errorCode: Int = OTHER_ERROR)
+        fun onResults(resultBundle: ResultBundle)
+    }
+}
+
+================
+File: java/com/google/mediapipe/examples/handlandmarker/MainActivity.kt
+================
+package com.google.mediapipe.examples.handlandmarker
+
+import android.os.Bundle
+import androidx.activity.viewModels
+import androidx.appcompat.app.AppCompatActivity
+import androidx.navigation.fragment.NavHostFragment
+import androidx.navigation.ui.setupWithNavController
+import com.google.mediapipe.examples.handlandmarker.databinding.ActivityMainBinding
+
+class MainActivity : AppCompatActivity() {
+    private lateinit var activityMainBinding: ActivityMainBinding
+    private val viewModel: MainViewModel by viewModels()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        activityMainBinding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(activityMainBinding.root)
+
+        val navHostFragment =
+                supportFragmentManager.findFragmentById(R.id.fragment_container) as NavHostFragment
+        val navController = navHostFragment.navController
+        activityMainBinding.navigation.setupWithNavController(navController)
+        activityMainBinding.navigation.setOnNavigationItemReselectedListener {
+            // ignore the reselection
+        }
+    }
+
+    override fun onBackPressed() {
+        finish()
+    }
+}
+
+================
+File: java/com/google/mediapipe/examples/handlandmarker/MainViewModel.kt
+================
+package com.google.mediapipe.examples.handlandmarker
+
+import androidx.lifecycle.ViewModel
+
+/** This ViewModel is used to store hand landmarker helper settings */
+class MainViewModel : ViewModel() {
+
+    private var _delegate: Int = HandLandmarkerHelper.DELEGATE_CPU
+    private var _minHandDetectionConfidence: Float =
+            HandLandmarkerHelper.DEFAULT_HAND_DETECTION_CONFIDENCE
+    private var _minHandTrackingConfidence: Float =
+            HandLandmarkerHelper.DEFAULT_HAND_TRACKING_CONFIDENCE
+    private var _minHandPresenceConfidence: Float =
+            HandLandmarkerHelper.DEFAULT_HAND_PRESENCE_CONFIDENCE
+    private var _maxHands: Int = HandLandmarkerHelper.DEFAULT_NUM_HANDS
+
+    val currentDelegate: Int
+        get() = _delegate
+    val currentMinHandDetectionConfidence: Float
+        get() = _minHandDetectionConfidence
+    val currentMinHandTrackingConfidence: Float
+        get() = _minHandTrackingConfidence
+    val currentMinHandPresenceConfidence: Float
+        get() = _minHandPresenceConfidence
+    val currentMaxHands: Int
+        get() = _maxHands
+
+    fun setDelegate(delegate: Int) {
+        _delegate = delegate
+    }
+
+    fun setMinHandDetectionConfidence(confidence: Float) {
+        _minHandDetectionConfidence = confidence
+    }
+    fun setMinHandTrackingConfidence(confidence: Float) {
+        _minHandTrackingConfidence = confidence
+    }
+    fun setMinHandPresenceConfidence(confidence: Float) {
+        _minHandPresenceConfidence = confidence
+    }
+
+    fun setMaxHands(maxResults: Int) {
+        _maxHands = maxResults
+    }
+}
+
+================
+File: java/com/google/mediapipe/examples/handlandmarker/OverlayView.kt
+================
+package com.google.mediapipe.examples.handlandmarker
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.util.AttributeSet
+import android.view.View
+import androidx.core.content.ContextCompat
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
+import kotlin.math.max
+import kotlin.math.min
+
+class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs) {
+
+    private var results: HandLandmarkerResult? = null
+    private var linePaint = Paint()
+    private var pointPaint = Paint()
+
+    private var scaleFactor: Float = 1f
+    private var imageWidth: Int = 1
+    private var imageHeight: Int = 1
+
+    init {
+        initPaints()
+    }
+
+    fun clear() {
+        results = null
+        linePaint.reset()
+        pointPaint.reset()
+        invalidate()
+        initPaints()
+    }
+
+    private fun initPaints() {
+        linePaint.color = ContextCompat.getColor(context!!, R.color.mp_color_primary)
+        linePaint.strokeWidth = LANDMARK_STROKE_WIDTH
+        linePaint.style = Paint.Style.STROKE
+
+        pointPaint.color = Color.YELLOW
+        pointPaint.strokeWidth = LANDMARK_STROKE_WIDTH
+        pointPaint.style = Paint.Style.FILL
+    }
+
+    override fun draw(canvas: Canvas) {
+        super.draw(canvas)
+        results?.let { handLandmarkerResult ->
+            for (landmark in handLandmarkerResult.landmarks()) {
+                for (normalizedLandmark in landmark) {
+                    canvas.drawPoint(
+                            normalizedLandmark.x() * imageWidth * scaleFactor,
+                            normalizedLandmark.y() * imageHeight * scaleFactor,
+                            pointPaint
+                    )
+                }
+
+                HandLandmarker.HAND_CONNECTIONS.forEach {
+                    canvas.drawLine(
+                            landmark.get(it!!.start()).x() * imageWidth * scaleFactor,
+                            landmark.get(it.start()).y() * imageHeight * scaleFactor,
+                            landmark.get(it.end()).x() * imageWidth * scaleFactor,
+                            landmark.get(it.end()).y() * imageHeight * scaleFactor,
+                            linePaint
+                    )
+                }
+            }
+        }
+    }
+
+    fun setResults(
+            handLandmarkerResults: HandLandmarkerResult,
+            imageHeight: Int,
+            imageWidth: Int,
+            runningMode: RunningMode = RunningMode.IMAGE
+    ) {
+        results = handLandmarkerResults
+
+        this.imageHeight = imageHeight
+        this.imageWidth = imageWidth
+
+        scaleFactor =
+                when (runningMode) {
+                    RunningMode.IMAGE, RunningMode.VIDEO -> {
+                        min(width * 1f / imageWidth, height * 1f / imageHeight)
+                    }
+                    RunningMode.LIVE_STREAM -> {
+                        // PreviewView is in FILL_START mode. So we need to scale up the
+                        // landmarks to match with the size that the captured images will be
+                        // displayed.
+                        max(width * 1f / imageWidth, height * 1f / imageHeight)
+                    }
+                }
+        invalidate()
+    }
+
+    companion object {
+        private const val LANDMARK_STROKE_WIDTH = 8F
+    }
+}
+
+================
+File: res/color/bg_nav_item.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@color/mp_color_primary" android:state_checked="true" />
+    <item android:color="@android:color/darker_gray" />
+</selector>
+
+================
+File: res/drawable/ic_baseline_add_24.xml
+================
+<vector android:height="24dp" android:tint="#FFFFFF"
+    android:viewportHeight="24" android:viewportWidth="24"
+    android:width="24dp" xmlns:android="http://schemas.android.com/apk/res/android">
+    <path android:fillColor="@android:color/white" android:pathData="M19,13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+</vector>
+
+================
+File: res/drawable/ic_baseline_photo_camera_24.xml
+================
+<vector android:height="24dp" android:tint="#000000"
+    android:viewportHeight="24" android:viewportWidth="24"
+    android:width="24dp" xmlns:android="http://schemas.android.com/apk/res/android">
+    <path android:fillColor="@android:color/white" android:pathData="M12,12m-3.2,0a3.2,3.2 0,1 1,6.4 0a3.2,3.2 0,1 1,-6.4 0"/>
+    <path android:fillColor="@android:color/white" android:pathData="M9,2L7.17,4L4,4c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2L22,6c0,-1.1 -0.9,-2 -2,-2h-3.17L15,2L9,2zM12,17c-2.76,0 -5,-2.24 -5,-5s2.24,-5 5,-5 5,2.24 5,5 -2.24,5 -5,5z"/>
+</vector>
+
+================
+File: res/drawable/ic_baseline_photo_library_24.xml
+================
+<vector android:height="24dp" android:tint="#000000"
+    android:viewportHeight="24" android:viewportWidth="24"
+    android:width="24dp" xmlns:android="http://schemas.android.com/apk/res/android">
+    <path android:fillColor="@android:color/white" android:pathData="M22,16L22,4c0,-1.1 -0.9,-2 -2,-2L8,2c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2zM11,12l2.03,2.71L16,11l4,5L8,16l3,-4zM2,6v14c0,1.1 0.9,2 2,2h14v-2L4,20L4,6L2,6z"/>
+</vector>
+
+================
+File: res/drawable/ic_minus.xml
+================
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FF000000" android:pathData="M19,13H5v-2h14v2z"/>
+</vector>
+
+================
+File: res/drawable/ic_plus.xml
+================
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FF000000" android:pathData="M19,13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+</vector>
+
+================
+File: res/drawable/media_pipe_banner.xml
+================
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="568dp" android:height="152dp" android:viewportWidth="568" android:viewportHeight="152">
+    <path android:pathData="M88,48C92.42,48 96,44.42 96,40C96,35.58 92.42,32 88,32C83.58,32 80,35.58 80,40C80,44.42 83.58,48 88,48Z" android:fillColor="#129EAF" android:fillType="evenOdd"/>
+    <path android:pathData="M48,88C48,83.58 44.42,80 40,80C35.58,80 32,83.58 32,88V112C32,116.42 35.58,120 40,120C44.42,120 48,116.42 48,112V88Z" android:fillColor="#129EAF" android:fillType="evenOdd"/>
+    <path android:pathData="M48,64V40C48,35.58 44.42,32 40,32C35.58,32 32,35.58 32,40V64C32,68.42 35.58,72 40,72C44.42,72 48,68.42 48,64Z" android:fillColor="#129EAF" android:fillType="evenOdd"/>
+    <path android:pathData="M72,88V40C72,35.58 68.42,32 64,32C59.58,32 56,35.58 56,40V88C56,92.42 59.58,96 64,96C68.42,96 72,92.42 72,88Z" android:fillColor="#129EAF" android:fillType="evenOdd"/>
+    <path android:pathData="M120,112V40C120,35.58 116.42,32 112,32C107.58,32 104,35.58 104,40V112C104,116.42 107.58,120 112,120C116.42,120 120,116.42 120,112Z" android:fillColor="#129EAF" android:fillType="evenOdd"/>
+    <path android:pathData="M96,112V64C96,59.58 92.42,56 88,56C83.58,56 80,59.58 80,64V112C80,116.42 83.58,120 88,120C92.42,120 96,116.42 96,112Z" android:fillColor="#129EAF" android:fillType="evenOdd"/>
+    <path android:pathData="M64,120C68.42,120 72,116.42 72,112C72,107.58 68.42,104 64,104C59.58,104 56,107.58 56,112C56,116.42 59.58,120 64,120Z" android:fillColor="#129EAF" android:fillType="evenOdd"/>
+    <path android:pathData="M505.92,102.51C509.1,104.34 512.67,105.25 516.64,105.25C524.93,105.25 531.1,101.7 535.17,94.61L526.88,90.55C525.89,92.27 524.55,93.64 522.85,94.65C521.16,95.67 519.14,96.18 516.79,96.18C513.98,96.18 511.57,95.36 509.56,93.72C507.55,92.07 506.29,89.66 505.77,86.48H535.72C535.87,85.39 535.95,84.24 535.95,83.04C535.95,79.29 535.18,75.87 533.65,72.8C532.11,69.72 529.85,67.3 526.88,65.52C523.91,63.75 520.36,62.87 516.25,62.87C512.39,62.87 508.89,63.83 505.77,65.76C502.64,67.69 500.19,70.28 498.42,73.54C496.64,76.8 495.76,80.33 495.76,84.14C495.76,88.15 496.66,91.76 498.46,94.97C500.25,98.17 502.74,100.69 505.92,102.51ZM524.73,75.5C525.54,76.72 525.99,77.96 526.1,79.21H506.24C507.02,76.76 508.28,74.82 510.03,73.38C511.77,71.95 513.87,71.23 516.32,71.23C518.25,71.23 519.93,71.64 521.37,72.45C522.8,73.25 523.92,74.27 524.73,75.5Z" android:fillColor="#37474F" android:fillType="evenOdd"/>
+    <path android:pathData="M458.26,64.12H448.01V120.89H458.26V104.86V99.23C459.3,100.95 460.88,102.38 462.99,103.53C465.1,104.68 467.51,105.25 470.22,105.25C473.82,105.25 477.09,104.35 480.03,102.55C482.98,100.75 485.29,98.25 486.95,95.04C488.62,91.84 489.46,88.18 489.46,84.06C489.46,79.99 488.62,76.34 486.95,73.11C485.29,69.88 482.98,67.36 480.03,65.56C477.09,63.77 473.82,62.87 470.22,62.87C467.51,62.87 465.11,63.45 463.03,64.63C460.94,65.8 459.35,67.25 458.26,68.97V64.12ZM474.37,94.3C472.7,95.29 470.91,95.79 468.98,95.79C467.1,95.79 465.33,95.29 463.66,94.3C461.99,93.31 460.66,91.93 459.67,90.16C458.68,88.38 458.19,86.35 458.19,84.06C458.19,81.76 458.68,79.73 459.67,77.96C460.66,76.19 461.99,74.82 463.66,73.85C465.33,72.89 467.1,72.41 468.98,72.41C470.91,72.41 472.7,72.89 474.37,73.85C476.04,74.82 477.37,76.19 478.36,77.96C479.35,79.73 479.85,81.76 479.85,84.06C479.85,86.35 479.35,88.38 478.36,90.16C477.37,91.93 476.04,93.31 474.37,94.3Z" android:fillColor="#37474F" android:fillType="evenOdd"/>
+    <path android:pathData="M428.71,57.78C430.02,59.09 431.58,59.74 433.4,59.74C435.23,59.74 436.78,59.09 438.06,57.78C439.33,56.48 439.97,54.92 439.97,53.09C439.97,51.27 439.33,49.72 438.06,48.44C436.78,47.16 435.23,46.52 433.4,46.52C431.58,46.52 430.02,47.16 428.71,48.44C427.41,49.72 426.76,51.27 426.76,53.09C426.76,54.92 427.41,56.48 428.71,57.78ZM438.49,64.12H428.24V104H438.49V64.12Z" android:fillColor="#37474F" android:fillType="evenOdd"/>
+    <path android:pathData="M402.26,48.01H382.55V104H393.11V83.43H402.26C405.8,83.43 409.04,82.69 411.96,81.2C414.88,79.72 417.17,77.62 418.84,74.91C420.51,72.2 421.34,69.12 421.34,65.68C421.34,62.24 420.51,59.18 418.84,56.49C417.17,53.81 414.88,51.72 411.96,50.24C409.04,48.75 405.8,48.01 402.26,48.01ZM408.71,71.16C407.23,72.67 405.18,73.42 402.57,73.42H393.11V58.02H402.57C405.18,58.02 407.23,58.76 408.71,60.25C410.2,61.73 410.94,63.54 410.94,65.68C410.94,67.82 410.2,69.64 408.71,71.16Z" android:fillColor="#37474F" android:fillType="evenOdd"/>
+    <path android:pathData="M338.83,101.54C341.54,104.01 345.01,105.25 349.23,105.25C351.78,105.25 354.04,104.75 355.99,103.76C357.95,102.77 359.52,101.5 360.72,99.93V104H371.44V79.44C371.44,74.02 369.85,69.9 366.67,67.09C363.49,64.27 358.85,62.87 352.75,62.87C349.31,62.87 346.13,63.54 343.21,64.9C340.29,66.25 337.86,68.18 335.93,70.69L342.5,75.85C343.65,74.44 345.1,73.31 346.84,72.45C348.59,71.59 350.4,71.15 352.28,71.15C355.04,71.15 357.24,71.83 358.89,73.19C360.53,74.54 361.35,76.32 361.35,78.51V80.23C358.43,79.03 354.91,78.43 350.79,78.43C347.82,78.43 345.11,78.97 342.66,80.07C340.21,81.16 338.28,82.73 336.87,84.76C335.47,86.79 334.76,89.14 334.76,91.8C334.76,95.81 336.12,99.06 338.83,101.54ZM358.73,94.42C356.98,96.32 354.63,97.27 351.65,97.27C349.52,97.27 347.87,96.76 346.73,95.75C345.58,94.73 345.01,93.42 345.01,91.8C345.01,87.84 347.67,85.86 352.98,85.86C355.9,85.86 358.69,86.48 361.35,87.73C361.35,90.29 360.48,92.52 358.73,94.42Z" android:fillColor="#37474F" android:fillType="evenOdd"/>
+    <path android:pathData="M317.51,57.78C318.82,59.09 320.38,59.74 322.2,59.74C324.03,59.74 325.58,59.09 326.86,57.78C328.14,56.48 328.77,54.92 328.77,53.09C328.77,51.27 328.14,49.72 326.86,48.44C325.58,47.16 324.03,46.52 322.2,46.52C320.38,46.52 318.82,47.16 317.51,48.44C316.21,49.72 315.56,51.27 315.56,53.09C315.56,54.92 316.21,56.48 317.51,57.78ZM327.29,64.12H317.04V104H327.29V64.12Z" android:fillColor="#37474F" android:fillType="evenOdd"/>
+    <path android:pathData="M274.53,102.55C277.48,104.35 280.75,105.25 284.35,105.25C287.06,105.25 289.47,104.68 291.58,103.53C293.69,102.38 295.27,100.95 296.31,99.23V104H306.48V48.01H296.31V63.34V68.97C295.22,67.25 293.63,65.8 291.54,64.63C289.45,63.45 287.06,62.87 284.35,62.87C280.75,62.87 277.48,63.77 274.53,65.56C271.59,67.36 269.27,69.88 267.57,73.11C265.88,76.34 265.03,79.99 265.03,84.06C265.03,88.18 265.88,91.84 267.57,95.04C269.27,98.25 271.59,100.75 274.53,102.55ZM290.83,94.3C289.16,95.29 287.36,95.79 285.43,95.79C283.56,95.79 281.78,95.29 280.12,94.3C278.45,93.31 277.12,91.93 276.13,90.16C275.14,88.38 274.64,86.35 274.64,84.06C274.64,81.76 275.14,79.73 276.13,77.96C277.12,76.19 278.45,74.82 280.12,73.85C281.78,72.89 283.56,72.41 285.43,72.41C287.36,72.41 289.16,72.89 290.83,73.85C292.5,74.82 293.83,76.19 294.82,77.96C295.81,79.73 296.3,81.76 296.3,84.06C296.3,86.35 295.81,88.38 294.82,90.16C293.83,91.93 292.5,93.31 290.83,94.3Z" android:fillColor="#37474F" android:fillType="evenOdd"/>
+    <path android:pathData="M228.66,102.51C231.84,104.34 235.41,105.25 239.37,105.25C247.66,105.25 253.84,101.7 257.9,94.61L249.61,90.55C248.62,92.27 247.28,93.64 245.59,94.65C243.89,95.67 241.87,96.18 239.53,96.18C236.71,96.18 234.3,95.36 232.29,93.72C230.29,92.07 229.02,89.66 228.5,86.48H258.45C258.61,85.39 258.68,84.24 258.68,83.04C258.68,79.29 257.92,75.87 256.38,72.8C254.84,69.72 252.59,67.3 249.61,65.52C246.64,63.75 243.1,62.87 238.98,62.87C235.12,62.87 231.63,63.83 228.5,65.76C225.37,67.69 222.92,70.28 221.15,73.54C219.38,76.8 218.49,80.33 218.49,84.14C218.49,88.15 219.39,91.76 221.19,94.97C222.99,98.17 225.48,100.69 228.66,102.51ZM247.46,75.5C248.27,76.72 248.73,77.96 248.83,79.21H228.97C229.75,76.76 231.02,74.82 232.76,73.38C234.51,71.95 236.61,71.23 239.06,71.23C240.99,71.23 242.67,71.64 244.1,72.45C245.54,73.25 246.66,74.27 247.46,75.5Z" android:fillColor="#37474F" android:fillType="evenOdd"/>
+    <path android:pathData="M152,48.01H165.61L180.47,87.34H181.09L195.95,48.01H209.63V104H199.16V76.39L199.78,67.09H199.16L184.93,104H176.71L162.4,67.09H161.78L162.4,76.39V104H152V48.01Z" android:fillColor="#37474F"/>
+</vector>
+
+================
+File: res/layout/activity_main.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@android:color/transparent">
+
+    <RelativeLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+
+        <androidx.fragment.app.FragmentContainerView android:id="@+id/fragment_container" android:name="androidx.navigation.fragment.NavHostFragment" android:layout_width="match_parent" android:layout_height="match_parent" android:layout_marginTop="?android:attr/actionBarSize" android:background="@android:color/transparent" android:keepScreenOn="true" app:defaultNavHost="true" app:navGraph="@navigation/nav_graph" tools:context=".MainActivity" />
+
+        <androidx.appcompat.widget.Toolbar android:id="@+id/toolbar" android:layout_width="match_parent" android:layout_height="?attr/actionBarSize" android:layout_alignParentTop="true" android:background="@color/toolbar_background">
+
+            <ImageView android:layout_width="wrap_content" android:layout_height="wrap_content" android:src="@drawable/media_pipe_banner" />
+        </androidx.appcompat.widget.Toolbar>
+
+        <com.google.android.material.bottomnavigation.BottomNavigationView android:id="@+id/navigation" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_below="@+id/toolbar" app:itemIconTint="@color/bg_nav_item" app:itemTextColor="@color/bg_nav_item" app:menu="@menu/menu_bottom_nav" />
+
+        <View android:id="@+id/view" android:layout_width="match_parent" android:layout_height="1dp" android:layout_below="@id/navigation" android:background="@android:color/darker_gray" />
+
+    </RelativeLayout>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
+
+================
+File: res/layout/fragment_camera.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto" android:id="@+id/camera_container" android:layout_width="match_parent" android:layout_height="match_parent">
+
+    <androidx.camera.view.PreviewView android:id="@+id/view_finder" android:layout_width="match_parent" android:layout_height="match_parent" app:scaleType="fillStart" />
+
+    <com.google.mediapipe.examples.handlandmarker.OverlayView android:id="@+id/overlay" android:layout_width="match_parent" android:layout_height="match_parent" />
+
+    <include android:id="@+id/bottom_sheet_layout" layout="@layout/info_bottom_sheet" />
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
+
+================
+File: res/layout/fragment_gallery.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto" android:layout_width="match_parent" android:layout_height="match_parent">
+
+    <androidx.constraintlayout.widget.ConstraintLayout android:layout_width="match_parent" android:layout_height="match_parent" android:layout_marginBottom="@dimen/bottom_sheet_peek_height">
+
+        <TextView android:id="@+id/tvPlaceholder" android:layout_width="match_parent" android:layout_height="match_parent" android:gravity="center" android:text="@string/tv_gallery_placeholder" app:layout_constraintTop_toTopOf="parent" />
+
+        <RelativeLayout android:layout_width="match_parent" android:layout_height="match_parent" android:layout_marginBottom="@dimen/bottom_sheet_peek_height">
+
+            <ImageView android:id="@+id/imageResult" android:layout_width="match_parent" android:layout_height="match_parent" android:contentDescription="@null" android:scaleType="fitStart" android:visibility="gone" />
+
+            <VideoView android:id="@+id/videoView" android:layout_width="match_parent" android:layout_height="match_parent" android:visibility="gone" />
+
+            <com.google.mediapipe.examples.handlandmarker.OverlayView android:id="@+id/overlay" android:layout_width="match_parent" android:layout_height="match_parent" android:layout_centerInParent="true" />
+
+            <androidx.core.widget.ContentLoadingProgressBar android:id="@+id/progress" style="?android:attr/progressBarStyle" android:layout_width="50dp" android:layout_height="50dp" android:layout_centerInParent="true" android:indeterminate="true" android:theme="@style/AppThemeProgressStyle" android:visibility="gone" />
+
+        </RelativeLayout>
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton android:id="@+id/fabGetContent" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_gravity="end|bottom" android:layout_margin="@dimen/fab_margin" android:backgroundTint="@color/mp_color_primary" android:contentDescription="@null" android:src="@drawable/ic_baseline_add_24" app:layout_constraintBottom_toBottomOf="parent" app:layout_constraintEnd_toEndOf="parent" app:tint="@android:color/white" />
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <include android:id="@+id/bottom_sheet_layout" layout="@layout/info_bottom_sheet" />
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
+
+================
+File: res/layout/info_bottom_sheet.xml
+================
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto" android:id="@+id/bottom_sheet_layout" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="center_horizontal" android:background="@color/bottom_sheet_background" android:gravity="center_horizontal" android:orientation="vertical" android:padding="@dimen/bottom_sheet_padding" app:behavior_hideable="false" app:behavior_peekHeight="@dimen/bottom_sheet_peek_height" app:layout_behavior="com.google.android.material.bottomsheet.BottomSheetBehavior">
+
+    <androidx.appcompat.widget.LinearLayoutCompat android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+
+        <!-- Chevron indicating that the bottom sheet is expandable -->
+        <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content">
+
+            <ImageView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_centerHorizontal="true" android:layout_centerVertical="true" android:contentDescription="@string/alt_bottom_sheet_chevron" android:src="@drawable/icn_chevron_up" />
+        </RelativeLayout>
+
+        <!-- Inference time row -->
+        <androidx.appcompat.widget.LinearLayoutCompat android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="@dimen/bottom_sheet_default_row_margin" android:orientation="horizontal">
+
+            <TextView android:id="@+id/inference_time_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_centerVertical="true" android:text="@string/label_inference_time" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+            <TextView android:id="@+id/inference_time_val" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_centerVertical="true" android:gravity="end" android:text="0ms" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+        </androidx.appcompat.widget.LinearLayoutCompat>
+
+        <!-- ML confidence threshold adjustment row -->
+        <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="@dimen/bottom_sheet_default_row_margin" android:gravity="center" android:orientation="horizontal">
+
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_centerVertical="true" android:text="@string/label_hand_detection_confidence_threshold" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentRight="true" android:gravity="center_vertical" android:orientation="horizontal">
+
+                <androidx.appcompat.widget.AppCompatImageButton android:id="@+id/detection_threshold_minus" android:layout_width="@dimen/bottom_sheet_control_btn_size" android:layout_height="@dimen/bottom_sheet_control_btn_size" android:contentDescription="@string/alt_bottom_sheet_threshold_button_minus" android:src="@drawable/ic_minus" />
+
+                <TextView android:id="@+id/detection_threshold_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginLeft="@dimen/bottom_sheet_control_text_side_margin" android:layout_marginRight="@dimen/bottom_sheet_control_text_side_margin" android:gravity="center" android:minEms="@integer/bottom_sheet_control_text_min_ems" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+                <androidx.appcompat.widget.AppCompatImageButton android:id="@+id/detection_threshold_plus" android:layout_width="@dimen/bottom_sheet_control_btn_size" android:layout_height="@dimen/bottom_sheet_control_btn_size" android:contentDescription="@string/alt_bottom_sheet_threshold_button_plus" android:src="@drawable/ic_plus" />
+            </LinearLayout>
+        </RelativeLayout>
+
+        <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="@dimen/bottom_sheet_default_row_margin" android:gravity="center" android:orientation="horizontal">
+
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_centerVertical="true" android:text="@string/label_hand_tracking_confidence_threshold" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentRight="true" android:gravity="center_vertical" android:orientation="horizontal">
+
+                <androidx.appcompat.widget.AppCompatImageButton android:id="@+id/tracking_threshold_minus" android:layout_width="@dimen/bottom_sheet_control_btn_size" android:layout_height="@dimen/bottom_sheet_control_btn_size" android:contentDescription="@string/alt_bottom_sheet_threshold_button_minus" android:src="@drawable/ic_minus" />
+
+                <TextView android:id="@+id/tracking_threshold_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginLeft="@dimen/bottom_sheet_control_text_side_margin" android:layout_marginRight="@dimen/bottom_sheet_control_text_side_margin" android:gravity="center" android:minEms="@integer/bottom_sheet_control_text_min_ems" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+                <androidx.appcompat.widget.AppCompatImageButton android:id="@+id/tracking_threshold_plus" android:layout_width="@dimen/bottom_sheet_control_btn_size" android:layout_height="@dimen/bottom_sheet_control_btn_size" android:contentDescription="@string/alt_bottom_sheet_threshold_button_plus" android:src="@drawable/ic_plus" />
+            </LinearLayout>
+        </RelativeLayout>
+
+        <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="@dimen/bottom_sheet_default_row_margin" android:gravity="center" android:orientation="horizontal">
+
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_centerVertical="true" android:text="@string/label_hand_presence_confidence_threshold" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentRight="true" android:gravity="center_vertical" android:orientation="horizontal">
+
+                <androidx.appcompat.widget.AppCompatImageButton android:id="@+id/presence_threshold_minus" android:layout_width="@dimen/bottom_sheet_control_btn_size" android:layout_height="@dimen/bottom_sheet_control_btn_size" android:contentDescription="@string/alt_bottom_sheet_threshold_button_minus" android:src="@drawable/ic_minus" />
+
+                <TextView android:id="@+id/presence_threshold_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginLeft="@dimen/bottom_sheet_control_text_side_margin" android:layout_marginRight="@dimen/bottom_sheet_control_text_side_margin" android:gravity="center" android:minEms="@integer/bottom_sheet_control_text_min_ems" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+                <androidx.appcompat.widget.AppCompatImageButton android:id="@+id/presence_threshold_plus" android:layout_width="@dimen/bottom_sheet_control_btn_size" android:layout_height="@dimen/bottom_sheet_control_btn_size" android:contentDescription="@string/alt_bottom_sheet_threshold_button_plus" android:src="@drawable/ic_plus" />
+            </LinearLayout>
+        </RelativeLayout>
+
+        <!-- ML max num hands adjustment row -->
+        <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="@dimen/bottom_sheet_default_row_margin" android:gravity="center" android:orientation="horizontal">
+
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_centerVertical="true" android:text="@string/label_num_hands" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentRight="true" android:gravity="center" android:orientation="horizontal">
+
+                <androidx.appcompat.widget.AppCompatImageButton android:id="@+id/max_hands_minus" android:layout_width="@dimen/bottom_sheet_control_btn_size" android:layout_height="@dimen/bottom_sheet_control_btn_size" android:contentDescription="@string/alt_bottom_sheet_max_results_button_minus" android:src="@drawable/ic_minus" />
+
+                <TextView android:id="@+id/max_hands_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginLeft="@dimen/bottom_sheet_control_text_side_margin" android:layout_marginRight="@dimen/bottom_sheet_control_text_side_margin" android:gravity="center" android:minEms="@integer/bottom_sheet_control_text_min_ems" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+                <androidx.appcompat.widget.AppCompatImageButton android:id="@+id/max_hands_plus" android:layout_width="@dimen/bottom_sheet_control_btn_size" android:layout_height="@dimen/bottom_sheet_control_btn_size" android:contentDescription="@string/alt_bottom_sheet_max_results_button_plus" android:src="@drawable/ic_plus" />
+            </LinearLayout>
+        </RelativeLayout>
+
+        <!-- Delegate selection row -->
+        <RelativeLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="@dimen/bottom_sheet_default_row_margin">
+
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/label_delegate" android:textColor="@color/bottom_sheet_text_color" android:textSize="@dimen/bottom_sheet_text_size" />
+
+            <androidx.appcompat.widget.AppCompatSpinner android:id="@+id/spinner_delegate" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_alignParentRight="true" android:entries="@array/delegate_spinner_titles" android:minWidth="@dimen/bottom_sheet_spinner_delegate_min_width" android:spinnerMode="dropdown" android:theme="@style/BottomSheetSpinnerItemStyle" />
+
+        </RelativeLayout>
+    </androidx.appcompat.widget.LinearLayoutCompat>
+</androidx.core.widget.NestedScrollView>
+
+================
+File: res/menu/menu_bottom_nav.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@id/camera_fragment" android:icon="@drawable/ic_baseline_photo_camera_24" android:title="@string/menu_camera" />
+
+    <item android:id="@id/gallery_fragment" android:icon="@drawable/ic_baseline_photo_library_24" android:title="@string/menu_gallery" />
+</menu>
+
+================
+File: res/navigation/nav_graph.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto" android:id="@+id/nav_graph" app:startDestination="@id/permissions_fragment">
+
+    <fragment android:id="@+id/permissions_fragment" android:name="com.google.mediapipe.examples.handlandmarker.fragment.PermissionsFragment" android:label="PermissionsFragment">
+
+        <action android:id="@+id/action_permissions_to_camera" app:destination="@id/camera_fragment" app:popUpTo="@id/permissions_fragment" app:popUpToInclusive="true" />
+
+    </fragment>
+
+    <fragment android:id="@+id/camera_fragment" android:name="com.google.mediapipe.examples.handlandmarker.fragment.CameraFragment" android:label="CameraFragment">
+
+        <action android:id="@+id/action_camera_to_permissions" app:destination="@id/permissions_fragment" app:popUpTo="@id/camera_fragment" app:popUpToInclusive="true" />
+    </fragment>
+
+    <fragment android:id="@+id/gallery_fragment" android:name="com.google.mediapipe.examples.handlandmarker.fragment.GalleryFragment" android:label="GalleryFragment" />
+</navigation>
+
+================
+File: res/values/colors.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<resources>
+    <color name="mp_color_primary">#007F8B</color>
+    <color name="mp_color_primary_variant">#12B5CB</color>
+    <color name="mp_color_primary_dark">#00676D</color>
+    <color name="mp_color_secondary">#FBBC04</color>
+    <color name="mp_color_secondary_variant">#F9AB00</color>
+    <color name="mp_color_error">#B00020</color>
+    <color name="toolbar_background">#E0E0E0</color>
+    <color name="ic_launcher_background">#FFFFFF</color>
+    <color name="bottom_sheet_background">#EEEEEE</color>
+    <color name="bottom_sheet_text_color">@android:color/black</color>
+    <color name="icActive">#FFFFFFFF</color>
+    <color name="icFocused">#DDFFFFFF</color>
+    <color name="icPressed">#AAFFFFFF</color>
+</resources>
+
+================
+File: res/values/dimens.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<resources>
+    <dimen name="stroke_small">4dp</dimen>
+    <dimen name="round_button_medium">64dp</dimen>
+
+    <!-- Bottom Sheet -->
+    <dimen name="bottom_sheet_text_size">18sp</dimen>
+    <dimen name="bottom_sheet_padding">16dp</dimen>
+    <dimen name="bottom_sheet_peek_height">50dp</dimen>
+    <dimen name="bottom_sheet_default_row_margin">16dp</dimen>
+    <dimen name="bottom_sheet_control_btn_size">48dp</dimen>
+    <dimen name="bottom_sheet_control_text_side_margin">10dp</dimen>
+    <dimen name="bottom_sheet_spinner_delegate_min_width">160dp</dimen>
+    <dimen name="bottom_sheet_spinner_model_min_width">240dp</dimen>
+
+    <integer name="bottom_sheet_control_text_min_ems">3</integer>
+    <dimen name="fab_margin">16dp</dimen>
+</resources>
+
+================
+File: res/values/strings.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<resources>
+    <string name="app_name">MP Hand Landmarker</string>
+
+    <string name="media_pipe">MediaPipe</string>
+
+    <string name="alt_bottom_sheet_chevron">Bottom sheet expandable indicator</string>
+
+    <string name="alt_bottom_sheet_max_results_button_minus">Decreasing
+        maximum hand results button</string>
+    <string name="alt_bottom_sheet_max_results_button_plus">Increasing
+        maximum hand results button</string>
+    <string name="alt_bottom_sheet_threshold_button_minus">Decreasing
+        threshold of hand detect results button</string>
+    <string name="alt_bottom_sheet_threshold_button_plus">Increasing
+        threshold of hand detect results button</string>
+    <string name="menu_camera">Camera</string>
+    <string name="menu_gallery">Gallery</string>
+    <string name="tv_gallery_placeholder">Click + to add an image or a video
+        to begin running the hand landmarker.</string>
+
+    <string name="label_inference_time">Inference Time</string>
+    <string name="label_fps">Frames per Second</string>
+    <string name="label_hand_detection_confidence_threshold">Detection
+        Threshold</string>
+    <string name="label_hand_tracking_confidence_threshold">Tracking
+        Threshold</string>
+    <string name="label_hand_presence_confidence_threshold">Presence
+        Threshold</string>
+    <string name="label_num_hands">Number of Hands</string>
+    <string name="label_delegate">Delegate</string>
+
+    <string-array name="delegate_spinner_titles">
+        <item>CPU</item>
+        <item>GPU</item>
+    </string-array>
+</resources>
+
+================
+File: res/values/styles.xml
+================
+<?xml version="1.0" encoding="utf-8"?>
+
+<resources>
+
+    <!-- Base application theme. -->
+    <style name="AppTheme" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <!-- Primary brand color. -->
+        <item name="colorPrimary">@color/mp_color_primary</item>
+        <item name="colorPrimaryVariant">@color/mp_color_primary_variant</item>
+        <item name="colorPrimaryDark">@color/mp_color_primary_dark</item>
+        <!-- Secondary brand color. -->
+        <item name="colorSecondary">@color/mp_color_secondary</item>
+        <item name="colorSecondaryVariant">@color/mp_color_secondary_variant</item>
+        <item name="colorError">@color/mp_color_error</item>
+        <!-- Status bar color. -->
+        <item name="android:statusBarColor">?attr/colorPrimary</item>
+        <!-- Customize your theme here. -->
+    </style>
+
+    <style name="BottomSheetSpinnerItemStyle" parent="Widget.AppCompat.Light.DropDownItem.Spinner">
+        <item name="android:textSize">@dimen/bottom_sheet_text_size</item>
+    </style>
+
+    <style name="AppThemeProgressStyle">
+        <item name="colorAccent">@color/mp_color_primary_variant</item>
+    </style>
+</resources>
