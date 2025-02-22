@@ -18,11 +18,11 @@ import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 
 class HandLandmarkerHelper(
-        var minHandDetectionConfidence: Float = DEFAULT_HAND_DETECTION_CONFIDENCE,
-        var minHandTrackingConfidence: Float = DEFAULT_HAND_TRACKING_CONFIDENCE,
-        var minHandPresenceConfidence: Float = DEFAULT_HAND_PRESENCE_CONFIDENCE,
-        var maxNumHands: Int = DEFAULT_NUM_HANDS,
-        var currentDelegate: Int = DELEGATE_CPU,
+        private var minHandDetectionConfidence: Float = DEFAULT_HAND_DETECTION_CONFIDENCE,
+        private var minHandTrackingConfidence: Float = DEFAULT_HAND_TRACKING_CONFIDENCE,
+        private var minHandPresenceConfidence: Float = DEFAULT_HAND_PRESENCE_CONFIDENCE,
+        private var maxNumHands: Int = DEFAULT_NUM_HANDS,
+        private var currentDelegate: Int = DELEGATE_CPU,
         var runningMode: RunningMode = RunningMode.IMAGE,
         val context: Context,
         // this listener is only used when running in RunningMode.LIVE_STREAM
