@@ -3,16 +3,11 @@
 Directory Structure
 ================================================================
 AndroidManifest.xml
-java/com/google/mediapipe/examples/handlandmarker/fragment/CameraFragment.kt
-java/com/google/mediapipe/examples/handlandmarker/fragment/PermissionsFragment.kt
 java/com/google/mediapipe/examples/handlandmarker/HandLandmarkerHelper.kt
 java/com/google/mediapipe/examples/handlandmarker/MainActivity.kt
 java/com/google/mediapipe/examples/handlandmarker/MainViewModel.kt
 java/com/google/mediapipe/examples/handlandmarker/OverlayView.kt
-res/color/bg_nav_item.xml
 res/layout/activity_main.xml
-res/layout/fragment_camera.xml
-res/navigation/nav_graph.xml
 res/values/colors.xml
 res/values/dimens.xml
 res/values/strings.xml
@@ -66,319 +61,6 @@ File: AndroidManifest.xml
     </application>
 
 </manifest>
-
-================
-File: java/com/google/mediapipe/examples/handlandmarker/fragment/CameraFragment.kt
-================
-package com.google.mediapipe.examples.handlandmarker.fragment
-
-import android.annotation.SuppressLint
-import android.content.res.Configuration
-import android.os.Bundle
-import android.util.Log
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.Toast
-import androidx.camera.core.AspectRatio
-import androidx.camera.core.Camera
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.Fragment
-import androidx.fragment.app.activityViewModels
-import androidx.navigation.Navigation
-import com.google.mediapipe.examples.handlandmarker.HandLandmarkerHelper
-import com.google.mediapipe.examples.handlandmarker.MainViewModel
-import com.google.mediapipe.examples.handlandmarker.R
-import com.google.mediapipe.examples.handlandmarker.databinding.FragmentCameraBinding
-import com.google.mediapipe.tasks.vision.core.RunningMode
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-
-class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
-
-    companion object {
-        private const val TAG = "Hand Landmarker"
-    }
-
-    private var _fragmentCameraBinding: FragmentCameraBinding? = null
-
-    private val fragmentCameraBinding
-        get() = _fragmentCameraBinding!!
-
-    private lateinit var handLandmarkerHelper: HandLandmarkerHelper
-    private val viewModel: MainViewModel by activityViewModels()
-    private var preview: Preview? = null
-    private var imageAnalyzer: ImageAnalysis? = null
-    private var camera: Camera? = null
-    private var cameraProvider: ProcessCameraProvider? = null
-    private var cameraFacing = CameraSelector.LENS_FACING_FRONT
-
-    /** Blocking ML operations are performed using this executor */
-    private lateinit var backgroundExecutor: ExecutorService
-
-    override fun onResume() {
-        super.onResume()
-        // Make sure that all permissions are still present, since the
-        // user could have removed them while the app was in paused state.
-        if (!PermissionsFragment.hasPermissions(requireContext())) {
-            Navigation.findNavController(
-                requireActivity(), R.id.fragment_container
-            ).navigate(R.id.action_camera_to_permissions)
-        }
-
-        // Start the HandLandmarkerHelper again when users come back
-        // to the foreground.
-        backgroundExecutor.execute {
-            if (handLandmarkerHelper.isClose()) {
-                handLandmarkerHelper.setupHandLandmarker()
-            }
-        }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        if (this::handLandmarkerHelper.isInitialized) {
-            viewModel.setMaxHands(handLandmarkerHelper.maxNumHands)
-            viewModel.setMinHandDetectionConfidence(handLandmarkerHelper.minHandDetectionConfidence)
-            viewModel.setMinHandTrackingConfidence(handLandmarkerHelper.minHandTrackingConfidence)
-            viewModel.setMinHandPresenceConfidence(handLandmarkerHelper.minHandPresenceConfidence)
-            viewModel.setDelegate(handLandmarkerHelper.currentDelegate)
-
-            // Close the HandLandmarkerHelper and release resources
-            backgroundExecutor.execute { handLandmarkerHelper.clearHandLandmarker() }
-        }
-    }
-
-    override fun onDestroyView() {
-        _fragmentCameraBinding = null
-        super.onDestroyView()
-
-        // Shut down our background executor
-        backgroundExecutor.shutdown()
-        backgroundExecutor.awaitTermination(
-            Long.MAX_VALUE, TimeUnit.NANOSECONDS
-        )
-    }
-
-    override fun onCreateView(
-        inflater: LayoutInflater,
-        container: ViewGroup?,
-        savedInstanceState: Bundle?
-    ): View {
-        _fragmentCameraBinding =
-            FragmentCameraBinding.inflate(inflater, container, false)
-
-        return fragmentCameraBinding.root
-    }
-
-    @SuppressLint("MissingPermission")
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-
-        // Initialize our background executor
-        backgroundExecutor = Executors.newSingleThreadExecutor()
-
-        // Wait for the views to be properly laid out
-        fragmentCameraBinding.viewFinder.post {
-            // Set up the camera and its use cases
-            setUpCamera()
-        }
-
-        // Create the HandLandmarkerHelper that will handle the inference
-        backgroundExecutor.execute {
-            handLandmarkerHelper = HandLandmarkerHelper(
-                context = requireContext(),
-                runningMode = RunningMode.LIVE_STREAM,
-                minHandDetectionConfidence = viewModel.currentMinHandDetectionConfidence,
-                minHandTrackingConfidence = viewModel.currentMinHandTrackingConfidence,
-                minHandPresenceConfidence = viewModel.currentMinHandPresenceConfidence,
-                maxNumHands = viewModel.currentMaxHands,
-                currentDelegate = viewModel.currentDelegate,
-                handLandmarkerHelperListener = this
-            )
-        }
-
-
-    }
-
-
-    // Update the values displayed in the bottom sheet. Reset Handlandmarker
-    // helper.
-
-    // Initialize CameraX, and prepare to bind the camera use cases
-    private fun setUpCamera() {
-        val cameraProviderFuture =
-            ProcessCameraProvider.getInstance(requireContext())
-        cameraProviderFuture.addListener(
-            {
-                // CameraProvider
-                cameraProvider = cameraProviderFuture.get()
-
-                // Build and bind the camera use cases
-                bindCameraUseCases()
-            }, ContextCompat.getMainExecutor(requireContext())
-        )
-    }
-
-    // Declare and bind preview, capture and analysis use cases
-    @SuppressLint("UnsafeOptInUsageError")
-    private fun bindCameraUseCases() {
-
-        // CameraProvider
-        val cameraProvider = cameraProvider
-            ?: throw IllegalStateException("Camera initialization failed.")
-
-        val cameraSelector =
-            CameraSelector.Builder().requireLensFacing(cameraFacing).build()
-
-        // Preview. Only using the 4:3 ratio because this is the closest to our models
-        preview = Preview.Builder().setTargetAspectRatio(AspectRatio.RATIO_4_3)
-            .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
-            .build()
-
-        // ImageAnalysis. Using RGBA 8888 to match how our models work
-        imageAnalyzer =
-            ImageAnalysis.Builder().setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                .build()
-                // The analyzer can then be assigned to the instance
-                .also {
-                    it.setAnalyzer(backgroundExecutor) { image ->
-                        detectHand(image)
-                    }
-                }
-
-        // Must unbind the use-cases before rebinding them
-        cameraProvider.unbindAll()
-
-        try {
-            // A variable number of use-cases can be passed here -
-            // camera provides access to CameraControl & CameraInfo
-            camera = cameraProvider.bindToLifecycle(
-                this, cameraSelector, preview, imageAnalyzer
-            )
-
-            // Attach the viewfinder's surface provider to preview use case
-            preview?.setSurfaceProvider(fragmentCameraBinding.viewFinder.surfaceProvider)
-        } catch (exc: Exception) {
-            Log.e(TAG, "Use case binding failed", exc)
-        }
-    }
-
-    private fun detectHand(imageProxy: ImageProxy) {
-        handLandmarkerHelper.detectLiveStream(
-            imageProxy = imageProxy,
-            isFrontCamera = cameraFacing == CameraSelector.LENS_FACING_FRONT
-        )
-    }
-
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        imageAnalyzer?.targetRotation =
-            fragmentCameraBinding.viewFinder.display.rotation
-    }
-
-    // Update UI after hand have been detected. Extracts original
-    // image height/width to scale and place the landmarks properly through
-    // OverlayView
-    override fun onResults(
-        resultBundle: HandLandmarkerHelper.ResultBundle
-    ) {
-        activity?.runOnUiThread {
-            if (_fragmentCameraBinding != null) {
-//                        String.format("%d ms", resultBundle.inferenceTime)
-
-                // Pass necessary information to OverlayView for drawing on the canvas
-                fragmentCameraBinding.overlay.setResults(
-                    resultBundle.results.first(),
-                    resultBundle.inputImageHeight,
-                    resultBundle.inputImageWidth,
-                    RunningMode.LIVE_STREAM
-                )
-
-                // Force a redraw
-                fragmentCameraBinding.overlay.invalidate()
-            }
-        }
-    }
-
-    override fun onError(error: String, errorCode: Int) {
-        activity?.runOnUiThread {
-            Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
-
-        }
-    }
-}
-
-================
-File: java/com/google/mediapipe/examples/handlandmarker/fragment/PermissionsFragment.kt
-================
-package com.google.mediapipe.examples.handlandmarker.fragment
-
-import android.Manifest
-import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Bundle
-import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
-import androidx.fragment.app.Fragment
-import androidx.lifecycle.lifecycleScope
-import androidx.navigation.Navigation
-import com.google.mediapipe.examples.handlandmarker.R
-
-private val PERMISSIONS_REQUIRED = arrayOf(Manifest.permission.CAMERA)
-
-class PermissionsFragment : Fragment() {
-
-    private val requestPermissionLauncher =
-            registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-                    isGranted: Boolean ->
-                if (isGranted) {
-                    Toast.makeText(context, "Permission request granted", Toast.LENGTH_LONG).show()
-                    navigateToCamera()
-                } else {
-                    Toast.makeText(context, "Permission request denied", Toast.LENGTH_LONG).show()
-                }
-            }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        when (PackageManager.PERMISSION_GRANTED) {
-            ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA) -> {
-                navigateToCamera()
-            }
-            else -> {
-                requestPermissionLauncher.launch(Manifest.permission.CAMERA)
-            }
-        }
-    }
-
-    private fun navigateToCamera() {
-        lifecycleScope.launchWhenStarted {
-            Navigation.findNavController(requireActivity(), R.id.fragment_container)
-                    .navigate(R.id.action_permissions_to_camera)
-        }
-    }
-
-    companion object {
-
-        /** Convenience method used to check if all permissions required by this app are granted */
-        fun hasPermissions(context: Context) =
-                PERMISSIONS_REQUIRED.all {
-                    ContextCompat.checkSelfPermission(context, it) ==
-                            PackageManager.PERMISSION_GRANTED
-                }
-    }
-}
 
 ================
 File: java/com/google/mediapipe/examples/handlandmarker/HandLandmarkerHelper.kt
@@ -719,24 +401,147 @@ File: java/com/google/mediapipe/examples/handlandmarker/MainActivity.kt
 ================
 package com.google.mediapipe.examples.handlandmarker
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
+import android.view.Surface
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.navigation.fragment.NavHostFragment
+import androidx.camera.core.*
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
 import com.google.mediapipe.examples.handlandmarker.databinding.ActivityMainBinding
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
-class MainActivity : AppCompatActivity() {
-    private lateinit var activityMainBinding: ActivityMainBinding
+class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListener {
+
+    private lateinit var binding: ActivityMainBinding
+    private lateinit var cameraExecutor: ExecutorService
+    private lateinit var handLandmarkerHelper: HandLandmarkerHelper
+    private var imageAnalyzer: ImageAnalysis? = null
+    private var camera: Camera? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private val cameraFacing = CameraSelector.LENS_FACING_FRONT
+
+    companion object {
+        private const val TAG = "MainActivity"
+    }
+
+    // ✅ Register permission launcher **once** at the class level
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (isGranted) {
+                setupCamera()
+            } else {
+                Toast.makeText(this, "Camera permission is required", Toast.LENGTH_LONG).show()
+                finish()
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        activityMainBinding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(activityMainBinding.root)
 
-        val navHostFragment =
-                supportFragmentManager.findFragmentById(R.id.fragment_container) as NavHostFragment
-      
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
+        cameraExecutor = Executors.newSingleThreadExecutor()
+
+        // ✅ Ensure the UI is ready before requesting permissions
+        binding.viewFinder.post {
+            requestCameraPermission()
+        }
     }
 
+    private fun requestCameraPermission() {
+        when {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED -> {
+                setupCamera()
+            }
+            else -> {
+                requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+        }
+    }
+
+    private fun setupCamera() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+
+        cameraProviderFuture.addListener({
+            cameraProvider = cameraProviderFuture.get()
+
+            val cameraSelector = CameraSelector.Builder()
+                .requireLensFacing(cameraFacing)
+                .build()
+
+            val preview = Preview.Builder()
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .setTargetRotation(binding.viewFinder.display?.rotation ?: Surface.ROTATION_0)
+                .build()
+                .also {
+                    it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
+                }
+
+            imageAnalyzer = ImageAnalysis.Builder()
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .setTargetRotation(binding.viewFinder.display?.rotation ?: Surface.ROTATION_0)
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                .build()
+                .also {
+                    it.setAnalyzer(cameraExecutor) { image -> detectHand(image) }
+                }
+
+            try {
+                cameraProvider?.unbindAll()
+                camera = cameraProvider?.bindToLifecycle(this, cameraSelector, preview, imageAnalyzer)
+            } catch (exc: Exception) {
+                Log.e(TAG, "Use case binding failed", exc)
+            }
+        }, ContextCompat.getMainExecutor(this))
+
+        handLandmarkerHelper = HandLandmarkerHelper(
+            context = this,
+            runningMode = RunningMode.LIVE_STREAM,
+            handLandmarkerHelperListener = this
+        )
+    }
+
+    private fun detectHand(imageProxy: ImageProxy) {
+        handLandmarkerHelper.detectLiveStream(
+            imageProxy = imageProxy,
+            isFrontCamera = (cameraFacing == CameraSelector.LENS_FACING_FRONT)
+        )
+    }
+
+    override fun onResults(resultBundle: HandLandmarkerHelper.ResultBundle) {
+        runOnUiThread {
+            resultBundle.results.firstOrNull()?.let {
+                binding.overlay.setResults(
+                    it,
+                    resultBundle.inputImageHeight,
+                    resultBundle.inputImageWidth,
+                    RunningMode.LIVE_STREAM
+                )
+            }
+            binding.overlay.invalidate()
+        }
+    }
+
+    override fun onError(error: String, errorCode: Int) {
+        runOnUiThread {
+            Toast.makeText(this, error, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        cameraExecutor.shutdown()
+        handLandmarkerHelper.clearHandLandmarker()
+    }
     override fun onBackPressed() {
         finish()
     }
@@ -898,88 +703,31 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 }
 
 ================
-File: res/color/bg_nav_item.xml
-================
-<?xml version="1.0" encoding="utf-8"?>
-
-<selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:color="@color/mp_color_primary" android:state_checked="true" />
-    <item android:color="@android:color/darker_gray" />
-</selector>
-
-================
 File: res/layout/activity_main.xml
 ================
 <?xml version="1.0" encoding="utf-8"?>
 
-<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/transparent">
 
-    <RelativeLayout
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical">
-
-        <androidx.fragment.app.FragmentContainerView
-            android:id="@+id/fragment_container"
-            android:name="androidx.navigation.fragment.NavHostFragment"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="@android:color/transparent"
-            android:keepScreenOn="true"
-            app:defaultNavHost="true"
-            app:navGraph="@navigation/nav_graph"
-            tools:context=".MainActivity" />
-
-    </RelativeLayout>
-</androidx.coordinatorlayout.widget.CoordinatorLayout>
-
-================
-File: res/layout/fragment_camera.xml
-================
-<?xml version="1.0" encoding="utf-8"?>
-
-<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/camera_container"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent">
-
-    <androidx.camera.view.PreviewView
+        <androidx.camera.view.PreviewView
         android:id="@+id/view_finder"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         app:scaleType="fillStart" />
 
-    <com.google.mediapipe.examples.handlandmarker.OverlayView
+
+    <View
         android:id="@+id/overlay"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:background="@android:color/transparent"/>
+
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>
 
-================
-File: res/navigation/nav_graph.xml
-================
-<?xml version="1.0" encoding="utf-8"?>
-
-<navigation xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto" android:id="@+id/nav_graph" app:startDestination="@id/permissions_fragment">
-
-    <fragment android:id="@+id/permissions_fragment" android:name="com.google.mediapipe.examples.handlandmarker.fragment.PermissionsFragment" android:label="PermissionsFragment">
-
-        <action android:id="@+id/action_permissions_to_camera" app:destination="@id/camera_fragment" app:popUpTo="@id/permissions_fragment" app:popUpToInclusive="true" />
-
-    </fragment>
-
-    <fragment android:id="@+id/camera_fragment" android:name="com.google.mediapipe.examples.handlandmarker.fragment.CameraFragment" android:label="CameraFragment">
-
-        <action android:id="@+id/action_camera_to_permissions" app:destination="@id/permissions_fragment" app:popUpTo="@id/camera_fragment" app:popUpToInclusive="true" />
-    </fragment>
-
-    <fragment android:id="@+id/gallery_fragment" android:name="com.google.mediapipe.examples.handlandmarker.fragment.GalleryFragment" android:label="GalleryFragment" />
-</navigation>
