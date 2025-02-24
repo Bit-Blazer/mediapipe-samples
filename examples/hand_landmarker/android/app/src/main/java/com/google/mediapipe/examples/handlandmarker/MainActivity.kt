@@ -18,15 +18,11 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
-import com.google.mediapipe.examples.handlandmarker.databinding.ActivityMainBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListener {
-
-    /** UI Binding */
-    private lateinit var binding: ActivityMainBinding
 
     /** CameraX Components */
     private var preview: Preview? = null
@@ -77,9 +73,8 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize UI
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        // Initialize UI using findViewById
+        setContentView(R.layout.activity_main)
 
         // Initialize background executor
         cameraExecutor = Executors.newSingleThreadExecutor()
@@ -94,7 +89,9 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     // Separate initialization logic into this function
     private fun initializeApp() {
-        binding.viewFinder.post { setupCamera() }
+        val viewFinder = findViewById<androidx.camera.view.PreviewView>(R.id.view_finder)
+
+        viewFinder.post { setupCamera() }
 
         // Initialize AI hand tracking model
         cameraExecutor.execute {
@@ -189,25 +186,23 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         val cameraSelector = CameraSelector.Builder().requireLensFacing(cameraFacing).build()
 
         // Preview setup - Only using the 4:3 ratio because this is the closest to our models
+        val viewFinder = findViewById<androidx.camera.view.PreviewView>(R.id.view_finder)
+
         preview =
                 Preview.Builder()
                         .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                        .setTargetRotation(
-                                binding.viewFinder.display?.rotation ?: Surface.ROTATION_0
-                        )
+                        .setTargetRotation(viewFinder.display?.rotation ?: Surface.ROTATION_0)
                         .build()
                         .also {
                             // Attach the viewfinder's surface provider to preview use case
-                            it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
+                            it.setSurfaceProvider(viewFinder.surfaceProvider)
                         }
 
         // Image analysis setup (for hand tracking) - Using RGBA 8888 to match how our models work
         imageAnalyzer =
                 ImageAnalysis.Builder()
                         .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                        .setTargetRotation(
-                                binding.viewFinder.display?.rotation ?: Surface.ROTATION_0
-                        )
+                        .setTargetRotation(viewFinder.display?.rotation ?: Surface.ROTATION_0)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                         .build()
@@ -242,14 +237,18 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
      */
     override fun onResults(resultBundle: HandLandmarkerHelper.ResultBundle) {
         runOnUiThread {
+            val overlay =
+                    findViewById<com.google.mediapipe.examples.handlandmarker.OverlayView>(
+                            R.id.overlay
+                    )
             resultBundle.results.firstOrNull()?.let {
                 // Pass necessary information to OverlayView for drawing on the canvas
-                binding.overlay.setResults(
+                overlay.setResults(
                         it,
                         resultBundle.inputImageHeight,
                         resultBundle.inputImageWidth,
                 )
-                binding.overlay.invalidate() // Redraw overlay
+                overlay.invalidate() // Redraw overlay
             }
         }
     }
@@ -261,7 +260,8 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        imageAnalyzer?.targetRotation = binding.viewFinder.display?.rotation ?: Surface.ROTATION_0
+        val viewFinder = findViewById<androidx.camera.view.PreviewView>(R.id.view_finder)
+        imageAnalyzer?.targetRotation = viewFinder.display?.rotation ?: Surface.ROTATION_0
     }
 
     companion object {
