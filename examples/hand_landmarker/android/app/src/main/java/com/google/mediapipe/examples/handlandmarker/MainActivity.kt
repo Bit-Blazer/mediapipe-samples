@@ -19,7 +19,6 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import com.google.mediapipe.examples.handlandmarker.databinding.ActivityMainBinding
-import com.google.mediapipe.tasks.vision.core.RunningMode
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -34,7 +33,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
     private var cameraProvider: ProcessCameraProvider? = null
-    private val cameraFacing = CameraSelector.LENS_FACING_FRONT
+    private val cameraFacing = CameraSelector.LENS_FACING_BACK
 
     /** AI Processing */
     private lateinit var handLandmarkerHelper: HandLandmarkerHelper
@@ -48,10 +47,26 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                     isGranted: Boolean ->
                 if (isGranted) {
                     Toast.makeText(this, "Permission granted", Toast.LENGTH_LONG).show()
-                    setupCamera()
+                    initializeApp()
                 } else {
-                    Toast.makeText(this, "Permission denied", Toast.LENGTH_LONG).show()
-                    finish()
+                    // Check if the user has previously denied permission
+                    if (shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
+                        // User denied permission once but can still allow it
+                        Toast.makeText(
+                                        this,
+                                        "Camera permission is required to use this app.",
+                                        Toast.LENGTH_LONG
+                                )
+                                .show()
+                    } else {
+                        // User permanently denied permission (selected "Don't ask again")
+                        Toast.makeText(
+                                        this,
+                                        "Permission denied. Enable it in app settings.",
+                                        Toast.LENGTH_LONG
+                                )
+                                .show()
+                    }
                 }
             }
 
@@ -69,15 +84,23 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         // Initialize background executor
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        // Ensure UI is fully ready before requesting permissions
-        binding.viewFinder.post { requestCameraPermission() }
+        // Only request permission without setting up anything yet
+        if (!hasPermissions(this)) {
+            requestCameraPermission()
+        } else {
+            initializeApp()
+        }
+    }
+
+    // Separate initialization logic into this function
+    private fun initializeApp() {
+        binding.viewFinder.post { setupCamera() }
 
         // Initialize AI hand tracking model
         cameraExecutor.execute {
             handLandmarkerHelper =
                     HandLandmarkerHelper(
                             context = this,
-                            runningMode = RunningMode.LIVE_STREAM,
                             handLandmarkerHelperListener = this
                     )
         }
@@ -124,7 +147,9 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     private fun requestCameraPermission() {
         when {
+            // Only setup the camera if permission is already granted
             hasPermissions(this) -> setupCamera()
+            // Request permission first, do NOT setup the camera yet
             else -> requestPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
@@ -150,7 +175,6 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             handLandmarkerHelper =
                     HandLandmarkerHelper(
                             context = this,
-                            runningMode = RunningMode.LIVE_STREAM,
                             handLandmarkerHelperListener = this
                     )
         }
@@ -208,8 +232,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     /** Sends each camera frame to the AI model for hand landmark detection */
     private fun detectHand(imageProxy: ImageProxy) {
         handLandmarkerHelper.detectLiveStream(
-                imageProxy = imageProxy,
-                isFrontCamera = (cameraFacing == CameraSelector.LENS_FACING_FRONT)
+                imageProxy = imageProxy
         )
     }
 
@@ -225,7 +248,6 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
                         it,
                         resultBundle.inputImageHeight,
                         resultBundle.inputImageWidth,
-                        RunningMode.LIVE_STREAM
                 )
                 binding.overlay.invalidate() // Redraw overlay
             }
@@ -233,7 +255,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     }
 
     /** Handles errors during AI hand detection */
-    override fun onError(error: String, errorCode: Int) {
+    override fun onError(error: String) {
         runOnUiThread { Toast.makeText(this, error, Toast.LENGTH_SHORT).show() }
     }
 
