@@ -98,6 +98,11 @@ class HandLandmarkerHelper(
                     // Rotate the frame received from the camera to be in the same direction as
                     // it'll be shown
                     postRotate(imageProxy.imageInfo.rotationDegrees.toFloat())
+
+                    //  // flip image if user use front camera
+                    //  if (isFrontCamera) {
+                    //     postScale(-1f, 1f, imageProxy.width.toFloat(), imageProxy.height.toFloat())
+                    // }
                 }
         val rotatedBitmap =
                 Bitmap.createBitmap(
