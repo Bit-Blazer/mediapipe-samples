@@ -16,6 +16,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.view.PreviewView
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import java.util.concurrent.ExecutorService
@@ -89,7 +90,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     // Separate initialization logic into this function
     private fun initializeApp() {
-        val viewFinder = findViewById<androidx.camera.view.PreviewView>(R.id.view_finder)
+        val viewFinder = findViewById<PreviewView>(R.id.view_finder)
 
         viewFinder.post { setupCamera() }
 
@@ -186,7 +187,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         val cameraSelector = CameraSelector.Builder().requireLensFacing(cameraFacing).build()
 
         // Preview setup - Only using the 4:3 ratio because this is the closest to our models
-        val viewFinder = findViewById<androidx.camera.view.PreviewView>(R.id.view_finder)
+        val viewFinder = findViewById<PreviewView>(R.id.view_finder)
 
         preview =
                 Preview.Builder()
@@ -238,7 +239,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     override fun onResults(resultBundle: HandLandmarkerHelper.ResultBundle) {
         runOnUiThread {
             val overlay =
-                    findViewById<com.google.mediapipe.examples.handlandmarker.OverlayView>(
+                    findViewById<OverlayView>(
                             R.id.overlay
                     )
             resultBundle.results.firstOrNull()?.let {
@@ -260,7 +261,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        val viewFinder = findViewById<androidx.camera.view.PreviewView>(R.id.view_finder)
+        val viewFinder = findViewById<PreviewView>(R.id.view_finder)
         imageAnalyzer?.targetRotation = viewFinder.display?.rotation ?: Surface.ROTATION_0
     }
 
