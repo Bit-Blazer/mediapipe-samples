@@ -1,14 +1,11 @@
 package com.google.mediapipe.examples.handlandmarker
 
-import android.Manifest
 import android.annotation.SuppressLint
-import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Log
 import android.view.Surface
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.Camera
@@ -16,8 +13,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
-import androidx.camera.view.PreviewView
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -38,35 +35,6 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     /** Executor for Background Tasks - Blocking ML operations are performed using this executor */
     private lateinit var cameraExecutor: ExecutorService
 
-    /** Permission Request Launcher */
-    private val requestPermissionLauncher =
-            registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-                    isGranted: Boolean ->
-                if (isGranted) {
-                    Toast.makeText(this, "Permission granted", Toast.LENGTH_LONG).show()
-                    initializeApp()
-                } else {
-                    // Check if the user has previously denied permission
-                    if (shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
-                        // User denied permission once but can still allow it
-                        Toast.makeText(
-                                        this,
-                                        "Camera permission is required to use this app.",
-                                        Toast.LENGTH_LONG
-                                )
-                                .show()
-                    } else {
-                        // User permanently denied permission (selected "Don't ask again")
-                        Toast.makeText(
-                                        this,
-                                        "Permission denied. Enable it in app settings.",
-                                        Toast.LENGTH_LONG
-                                )
-                                .show()
-                    }
-                }
-            }
-
     // --------------------------------------------------------------
     // ✅ Activity Lifecycle Methods
     // --------------------------------------------------------------
@@ -80,12 +48,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         // Initialize background executor
         cameraExecutor = Executors.newSingleThreadExecutor()
 
-        // Only request permission without setting up anything yet
-        if (!hasPermissions(this)) {
-            requestCameraPermission()
-        } else {
-            initializeApp()
-        }
+        initializeApp()
     }
 
     // Separate initialization logic into this function
@@ -97,20 +60,12 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         // Initialize AI hand tracking model
         cameraExecutor.execute {
             handLandmarkerHelper =
-                    HandLandmarkerHelper(
-                            context = this,
-                            handLandmarkerHelperListener = this
-                    )
+                    HandLandmarkerHelper(context = this, handLandmarkerHelperListener = this)
         }
     }
 
     override fun onResume() {
         super.onResume()
-        // Ensure permissions are still granted (User may have revoked them while the app was in
-        // paused state.)
-        if (!hasPermissions(this)) {
-            requestCameraPermission()
-        }
         // Restart HandLandmarkerHelper when app returns to foreground
         cameraExecutor.execute {
             if (::handLandmarkerHelper.isInitialized && handLandmarkerHelper.isClose()) {
@@ -140,19 +95,6 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     }
 
     // --------------------------------------------------------------
-    // ✅ Permission Handling
-    // --------------------------------------------------------------
-
-    private fun requestCameraPermission() {
-        when {
-            // Only setup the camera if permission is already granted
-            hasPermissions(this) -> setupCamera()
-            // Request permission first, do NOT setup the camera yet
-            else -> requestPermissionLauncher.launch(Manifest.permission.CAMERA)
-        }
-    }
-
-    // --------------------------------------------------------------
     // ✅ CameraX Setup
     // --------------------------------------------------------------
 
@@ -171,10 +113,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         // Ensure HandLandmarkerHelper is initialized
         cameraExecutor.execute {
             handLandmarkerHelper =
-                    HandLandmarkerHelper(
-                            context = this,
-                            handLandmarkerHelperListener = this
-                    )
+                    HandLandmarkerHelper(context = this, handLandmarkerHelperListener = this)
         }
     }
 
@@ -227,9 +166,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     /** Sends each camera frame to the AI model for hand landmark detection */
     private fun detectHand(imageProxy: ImageProxy) {
-        handLandmarkerHelper.detectLiveStream(
-                imageProxy = imageProxy
-        )
+        handLandmarkerHelper.detectLiveStream(imageProxy = imageProxy)
     }
 
     /**
@@ -238,10 +175,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
      */
     override fun onResults(resultBundle: HandLandmarkerHelper.ResultBundle) {
         runOnUiThread {
-            val overlay =
-                    findViewById<OverlayView>(
-                            R.id.overlay
-                    )
+            val overlay = findViewById<OverlayView>(R.id.overlay)
             resultBundle.results.firstOrNull()?.let {
                 // Pass necessary information to OverlayView for drawing on the canvas
                 overlay.setResults(
@@ -267,13 +201,5 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     companion object {
         private const val TAG = "MainActivity"
-        private val PERMISSIONS_REQUIRED = arrayOf(Manifest.permission.CAMERA)
-
-        /** Checks if all required permissions are granted */
-        fun hasPermissions(context: AppCompatActivity) =
-                PERMISSIONS_REQUIRED.all {
-                    ContextCompat.checkSelfPermission(context, it) ==
-                            PackageManager.PERMISSION_GRANTED
-                }
     }
 }
